@@ -216,10 +216,12 @@ export class OpenPhishFeed {
             if (data.openphish_urls && Array.isArray(data.openphish_urls)) {
                 this.phishingUrls = new Set(data.openphish_urls);
                 this.lastUpdate = data.openphish_lastupdate || 0;
+                console.log(`OpenPhish: Loaded ${this.phishingUrls.size} cached URLs`);
             }
 
             // Update if cache is old or empty
             if (Date.now() - this.lastUpdate > this.updateInterval || this.phishingUrls.size === 0) {
+                console.log('OpenPhish: Cache stale or empty, updating...');
                 await this.updateFeed();
             }
 
@@ -227,6 +229,8 @@ export class OpenPhishFeed {
             this.startPeriodicUpdates();
         } catch (error) {
             console.error('Error initializing OpenPhish feed:', error);
+            // Extension will continue to work without OpenPhish data
+            console.warn('OpenPhish feed unavailable - extension will use other detection methods');
         }
     }
 
@@ -235,9 +239,20 @@ export class OpenPhishFeed {
      */
     async updateFeed() {
         try {
-            console.log('Updating OpenPhish feed...');
+            console.log('OpenPhish: Fetching latest feed...');
 
-            const response = await fetch(this.feedUrl);
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+
+            const response = await fetch(this.feedUrl, {
+                signal: controller.signal,
+                headers: {
+                    'User-Agent': 'Safe-Browsing-Guard-Extension/2.0.0'
+                }
+            });
+
+            clearTimeout(timeoutId);
+
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}: ${response.statusText}`);
             }
@@ -245,19 +260,29 @@ export class OpenPhishFeed {
             const text = await response.text();
             const urls = text.split('\n')
                 .map(url => url.trim())
-                .filter(url => url.length > 0)
-                .slice(0, this.maxUrls); // Limit size
+                .filter(url => url.length > 0 && url.startsWith('http'))
+                .slice(0, this.maxUrls); // Limit size to 10,000 URLs
+
+            if (urls.length === 0) {
+                throw new Error('OpenPhish feed returned no URLs');
+            }
 
             this.phishingUrls = new Set(urls);
             this.lastUpdate = Date.now();
 
-            // Save to storage
-            await chrome.storage.local.set({
-                openphish_urls: Array.from(this.phishingUrls),
-                openphish_lastupdate: this.lastUpdate
-            });
+            // Check storage quota before saving
+            try {
+                await chrome.storage.local.set({
+                    openphish_urls: Array.from(this.phishingUrls),
+                    openphish_lastupdate: this.lastUpdate
+                });
 
-            console.log(`OpenPhish feed updated: ${this.phishingUrls.size} URLs loaded`);
+                console.log(`OpenPhish: Feed updated successfully - ${this.phishingUrls.size} URLs loaded`);
+            } catch (storageError) {
+                console.error('OpenPhish: Storage error:', storageError);
+                // Even if storage fails, keep URLs in memory
+                console.warn('OpenPhish: URLs cached in memory only (storage quota exceeded)');
+            }
 
             return {
                 success: true,
@@ -265,10 +290,23 @@ export class OpenPhishFeed {
                 timestamp: this.lastUpdate
             };
         } catch (error) {
-            console.error('Error updating OpenPhish feed:', error);
+            console.error('OpenPhish: Feed update failed:', error.message);
+
+            // If update fails but we have cached data, that's okay
+            if (this.phishingUrls.size > 0) {
+                console.warn(`OpenPhish: Using ${this.phishingUrls.size} cached URLs from previous update`);
+                return {
+                    success: false,
+                    error: error.message,
+                    usingCache: true,
+                    cacheSize: this.phishingUrls.size
+                };
+            }
+
             return {
                 success: false,
-                error: error.message
+                error: error.message,
+                usingCache: false
             };
         }
     }

@@ -181,27 +181,91 @@ async function checkUrlAndShowAlert(url, tabId) {
 async function updateTabIcon(tabId) {
     try {
         const tab = await chrome.tabs.get(tabId);
-        if (tab && tab.url) {
-            const suspiciousDomainResult = isSuspiciousDomain(tab.url, userOptions, suspiciousDomains);
-            const iconPath = suspiciousDomainResult
-                ? {
+        if (!tab || !tab.url) return;
+
+        // Check if domain is trusted first
+        const parsedUrl = new URL(tab.url);
+        const domain = parsedUrl.hostname;
+
+        if (userOptions.trustedDomains && userOptions.trustedDomains.includes(domain)) {
+            // Trusted domain - show normal icon
+            await chrome.action.setIcon({
+                tabId: tabId,
+                path: {
+                    "16": "icons/icon16.png",
+                    "48": "icons/icon48.png",
+                    "128": "icons/icon128.png"
+                }
+            });
+            await chrome.action.setTitle({
+                tabId: tabId,
+                title: "Safe Browsing Guard - Trusted Domain"
+            });
+            return;
+        }
+
+        // Perform all threat checks
+        const suspiciousDomainResult = isSuspiciousDomain(tab.url, userOptions, suspiciousDomains);
+        const advancedAnalysis = analyzeURL(tab.url);
+        const phishCheck = await openPhishFeed.checkURL(tab.url);
+
+        const isThreatDetected = suspiciousDomainResult || advancedAnalysis.detected || phishCheck.detected;
+
+        if (isThreatDetected) {
+            // Threat detected - show warning icon
+            await chrome.action.setIcon({
+                tabId: tabId,
+                path: {
                     "16": "icons/icon-warning-svg.png",
                     "48": "icons/icon-warning-svg.png",
                     "128": "icons/icon-warning-svg.png"
                 }
-                : {
+            });
+
+            // Set descriptive title for pinned icon
+            let titleText = "⚠️ Safe Browsing Guard - Warning!";
+            if (phishCheck.detected) {
+                titleText = "🎣 Safe Browsing Guard - PHISHING DETECTED!";
+            } else if (advancedAnalysis.riskScore > 70) {
+                titleText = `⚠️ Safe Browsing Guard - High Risk (${advancedAnalysis.riskScore}/100)`;
+            } else if (advancedAnalysis.detected) {
+                titleText = `⚠️ Safe Browsing Guard - Suspicious (${advancedAnalysis.riskScore}/100)`;
+            }
+
+            await chrome.action.setTitle({
+                tabId: tabId,
+                title: titleText
+            });
+        } else {
+            // Safe domain - show normal icon
+            await chrome.action.setIcon({
+                tabId: tabId,
+                path: {
                     "16": "icons/icon16.png",
                     "48": "icons/icon48.png",
                     "128": "icons/icon128.png"
-                };
-
-            await chrome.action.setIcon({
+                }
+            });
+            await chrome.action.setTitle({
                 tabId: tabId,
-                path: iconPath
+                title: "Safe Browsing Guard - No Threats Detected"
             });
         }
     } catch (error) {
         console.error("Error updating tab icon:", error);
+        // On error, ensure we don't leave icon in broken state
+        try {
+            await chrome.action.setIcon({
+                tabId: tabId,
+                path: {
+                    "16": "icons/icon16.png",
+                    "48": "icons/icon48.png",
+                    "128": "icons/icon128.png"
+                }
+            });
+        } catch (iconError) {
+            // Silently fail if we can't set icon
+        }
     }
 }
 
