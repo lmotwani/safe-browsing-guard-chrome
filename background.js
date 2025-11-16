@@ -1,8 +1,13 @@
 import { suspiciousDomains, suspiciousExtensions, defaultUserOptions } from './config.js';
 import { getWeekNumber, isSuspiciousDomain, isSuspiciousExtension, showSubtleAlert } from './utils.js';
+import { analyzeURL } from './advancedDetection.js';
+import { analyzeDownload, OpenPhishFeed } from './downloadAnalyzer.js';
 
 let userOptions = { ...defaultUserOptions };
 const shownDownloadWarnings = new Set();
+
+// Initialize OpenPhish feed
+const openPhishFeed = new OpenPhishFeed();
 
 const educationalResources = [
     {
@@ -114,15 +119,51 @@ async function checkUrlAndShowAlert(url, tabId) {
             userOptions.trustedDomains = [];
         }
 
+        // Check if domain is trusted
+        if (userOptions.trustedDomains.includes(domain)) return;
+
+        // Traditional suspicious domain check
         const suspiciousDomainResult = isSuspiciousDomain(url, userOptions, suspiciousDomains);
 
-        if (!userOptions.trustedDomains.includes(domain) && suspiciousDomainResult) {
+        // Advanced threat detection
+        const advancedAnalysis = analyzeURL(url);
+
+        // Check OpenPhish database
+        const phishCheck = await openPhishFeed.checkURL(url);
+
+        // Determine if we should show alert
+        const isThreatDetected = suspiciousDomainResult || advancedAnalysis.detected || phishCheck.detected;
+
+        if (isThreatDetected) {
             const shouldShow = userOptions.alertFrequency === 'always' ||
                 (userOptions.alertFrequency === 'daily' && !(await hasSiteBeenFlaggedToday(domain))) ||
                 (userOptions.alertFrequency === 'weekly' && !(await hasSiteBeenFlaggedThisWeek(domain)));
 
             if (shouldShow) {
-                const alertMessage = `Warning: This website (${domain}) or one of its subdomains is flagged as potentially suspicious. Attackers may use it for phishing or malware distribution. Proceed with caution.`;
+                // Build comprehensive alert message
+                let alertMessage = `⚠️ Security Warning: ${domain}\n\n`;
+
+                if (phishCheck.detected) {
+                    alertMessage += `🎣 PHISHING DETECTED: This URL is in the OpenPhish database of known phishing sites!\n\n`;
+                }
+
+                if (suspiciousDomainResult) {
+                    alertMessage += `This domain is flagged as potentially suspicious and may be abused for phishing or malware distribution.\n\n`;
+                }
+
+                if (advancedAnalysis.detected) {
+                    alertMessage += `Advanced threats detected:\n`;
+                    advancedAnalysis.threats.slice(0, 3).forEach(threat => {
+                        alertMessage += `• ${threat.message}\n`;
+                    });
+
+                    if (advancedAnalysis.riskScore > 0) {
+                        alertMessage += `\nRisk Score: ${advancedAnalysis.riskScore}/100\n`;
+                    }
+                }
+
+                alertMessage += `\nProceed with extreme caution!`;
+
                 await showSubtleAlert(alertMessage, tabId);
 
                 if (userOptions.alertFrequency === 'daily') {
@@ -164,7 +205,7 @@ async function updateTabIcon(tabId) {
     }
 }
 
-async function showWarningPopup(downloadItem) {
+async function showWarningPopup(downloadItem, downloadAnalysis, urlAnalysis, phishCheck) {
     const uniqueDownloadId = `${downloadItem.url}-${downloadItem.filename}`;
 
     if (shownDownloadWarnings.has(uniqueDownloadId)) return;
@@ -181,9 +222,17 @@ async function showWarningPopup(downloadItem) {
     }
 
     const fileExtension = downloadItem.filename.split('.').pop().toLowerCase();
-    
+
     const isDomainSuspicious = isSuspiciousDomain(url.href, userOptions, suspiciousDomains);
     const isExtensionSuspicious = isSuspiciousExtension(fileExtension, userOptions, suspiciousExtensions);
+
+    // Build comprehensive threat details
+    const threatDetails = {
+        downloadThreats: downloadAnalysis.detected ? downloadAnalysis.threats : [],
+        urlThreats: urlAnalysis.detected ? urlAnalysis.threats : [],
+        phishingDetected: phishCheck.detected,
+        riskScore: Math.max(downloadAnalysis.riskScore || 0, urlAnalysis.riskScore || 0)
+    };
 
     const urlParams = new URLSearchParams({
         url: downloadItem.url,
@@ -191,7 +240,8 @@ async function showWarningPopup(downloadItem) {
         filename: downloadItem.filename,
         downloadId: downloadItem.id.toString(),
         suspiciousDomain: isDomainSuspicious.toString(),
-        suspiciousExtension: isExtensionSuspicious.toString()
+        suspiciousExtension: isExtensionSuspicious.toString(),
+        threatDetails: JSON.stringify(threatDetails)
     });
 
     try {
@@ -229,6 +279,10 @@ async function importOptions(fileContent) {
 (async () => {
     await loadUserOptions();
 
+    // Initialize OpenPhish feed
+    await openPhishFeed.initialize();
+    console.log('OpenPhish feed initialized:', openPhishFeed.getStats());
+
     chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
         if (changeInfo.status === 'complete' && tab.url && tab.url.startsWith('http')) {
             await updateTabIcon(tabId);
@@ -246,30 +300,40 @@ async function importOptions(fileContent) {
 
     chrome.downloads.onCreated.addListener(async (downloadItem) => {
         try {
+            let checkUrl;
             if (downloadItem.url.startsWith('blob:')) {
-                const referrerUrl = new URL(downloadItem.referrer);
-                const domain = referrerUrl.hostname;
-                const fileExtension = downloadItem.filename.split('.').pop().toLowerCase();
-                
-                const isDomainSuspicious = isSuspiciousDomain(referrerUrl.href, userOptions, suspiciousDomains);
-                const isExtensionSuspicious = isSuspiciousExtension(fileExtension, userOptions, suspiciousExtensions);
-
-                if (isDomainSuspicious || isExtensionSuspicious) {
-                    await chrome.downloads.pause(downloadItem.id);
-                    await showWarningPopup(downloadItem);
-                }
+                checkUrl = downloadItem.referrer;
             } else {
-                const url = new URL(downloadItem.url);
-                const domain = url.hostname;
-                const fileExtension = downloadItem.filename.split('.').pop().toLowerCase();
-                
-                const isDomainSuspicious = isSuspiciousDomain(downloadItem.url, userOptions, suspiciousDomains);
-                const isExtensionSuspicious = isSuspiciousExtension(fileExtension, userOptions, suspiciousExtensions);
+                checkUrl = downloadItem.url;
+            }
 
-                if (isDomainSuspicious || isExtensionSuspicious) {
-                    await chrome.downloads.pause(downloadItem.id);
-                    await showWarningPopup(downloadItem);
-                }
+            const referrerUrl = new URL(checkUrl);
+            const domain = referrerUrl.hostname;
+            const fileExtension = downloadItem.filename.split('.').pop().toLowerCase();
+
+            // Traditional checks
+            const isDomainSuspicious = isSuspiciousDomain(checkUrl, userOptions, suspiciousDomains);
+            const isExtensionSuspicious = isSuspiciousExtension(fileExtension, userOptions, suspiciousExtensions);
+
+            // Advanced download analysis
+            const downloadAnalysis = analyzeDownload(downloadItem);
+
+            // Advanced URL analysis
+            const urlAnalysis = analyzeURL(checkUrl);
+
+            // Check OpenPhish database
+            const phishCheck = await openPhishFeed.checkURL(checkUrl);
+
+            // Determine if download is suspicious
+            const isSuspicious = isDomainSuspicious ||
+                                isExtensionSuspicious ||
+                                downloadAnalysis.detected ||
+                                urlAnalysis.detected ||
+                                phishCheck.detected;
+
+            if (isSuspicious) {
+                await chrome.downloads.pause(downloadItem.id);
+                await showWarningPopup(downloadItem, downloadAnalysis, urlAnalysis, phishCheck);
             }
         } catch (error) {
             console.error("Error handling suspicious download:", error);

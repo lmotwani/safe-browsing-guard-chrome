@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Safe Browsing Guard",
-  "version": "1.0.1",
-  "description": "Protects you from suspicious domains and potentially harmful downloads.",
+  "version": "2.0.0",
+  "description": "Advanced protection against phishing, typosquatting, homograph attacks, and malicious downloads with real-time threat intelligence.",
   "permissions": [
     "storage",
     "downloads",
