@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Safe Browsing Guard Options</title>
+    <link rel="stylesheet" href="options.css">
+</head>
+<body>
+    <div class="container">
+        <h1>Safe Browsing Guard Options</h1>
+        
+        <section class="section">
+            <h2>Educational Resources</h2>
+            <ul id="resourcesList" class="resources-list"></ul>
+        </section>
+
+        <section class="section">
+            <h2>Alert Settings</h2>
+            <label for="alertFrequency">Show alerts:</label>
+            <select id="alertFrequency">
+                <option value="always">Always</option>
+                <option value="daily">Once per day per domain</option>
+                <option value="weekly">Once per week per domain</option>
+                <option value="never">Never</option>
+            </select>
+        </section>
+
+        <section class="section">
+            <h2>Custom Rules</h2>
+            <label for="customDomains">Additional suspicious domains (one per line):</label>
+            <textarea id="customDomains" rows="5"></textarea>
+
+            <label for="customExtensions">Additional suspicious extensions (one per line):</label>
+            <textarea id="customExtensions" rows="5"></textarea>
+
+            <label for="trustedDomains">Trusted domains (one per line):</label>
+            <textarea id="trustedDomains" rows="5"></textarea>
+        </section>
+
+        <section class="section">
+            <h2>Import/Export Options</h2>
+            <div class="button-group">
+                <button id="exportButton">Export Options</button>
+                <label for="importInput" class="file-input-label">
+                    Import Options
+                    <input type="file" id="importInput" accept=".json">
+                </label>
+            </div>
+        </section>
+
+        <button id="saveButton">Save Changes</button>
+
+        <div id="statusMessage" class="status-message"></div>
+
+        <section class="section support-section">
+            <h2>Support the Project</h2>
+            <a href="https://www.buymeacoffee.com/lokeshmotwani" target="_blank">
+                <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" class="bmc-button">
+            </a>
+        </section>
+    </div>
+    <script src="options.js"></script>
+</body>
+</html>
